@@ -1,0 +1,28 @@
+# Ignore build output folders
+bin/
+obj/
+
+# Ignore temporary files
+*.tmp
+*.temp
+*.log
+
+# Ignore user-specific files
+*.user
+*.suo
+*.sln.docstates
+
+# Ignore .NET local files
+*.csproj.user
+appsettings.json
+appsettings.*.json
+
+# Ignore editor and OS files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Ignore NuGet packages
+*.nupkg
+packages/

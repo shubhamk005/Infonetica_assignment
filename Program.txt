@@ -1,0 +1,162 @@
+// Bring in stuff we need for the web API and lists
+using Microsoft.AspNetCore.Mvc;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+// Set up the web app
+var builder = WebApplication.CreateBuilder(args);
+var app = builder.Build();
+
+// Store workflows and instances in memory (like a simple list)
+var workflows = new Dictionary<string, Workflow>();
+var instances = new Dictionary<string, WorkflowInstance>();
+
+// Define what a State looks like (like a step in the workflow)
+public class State
+{
+    public string Id { get; set; } = ""; // Unique ID for the state
+    public string Name { get; set; } = ""; // Name of the state
+    public bool IsInitial { get; set; } // Is this the starting state?
+    public bool IsFinal { get; set; } // Is this the ending state?
+    public bool Enabled { get; set; } = true; // Can we use this state?
+}
+
+// Define what an Action looks like (like a move from one state to another)
+public class Action
+{
+    public string Id { get; set; } = ""; // Unique ID for the action
+    public string Name { get; set; } = ""; // Name of the action
+    public bool Enabled { get; set; } = true; // Can we use this action?
+    public List<string> FromStates { get; set; } = new(); // States we can do this action from
+    public string ToState { get; set; } = ""; // State we move to after the action
+}
+
+// Define a Workflow (has states and actions)
+public class Workflow
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString(); // Unique ID for the workflow
+    public List<State> States { get; set; } = new(); // List of states
+    public List<Action> Actions { get; set; } = new(); // List of actions
+}
+
+// Define a WorkflowInstance (a running version of a workflow)
+public class WorkflowInstance
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString(); // Unique ID for the instance
+    public string WorkflowId { get; set; } = ""; // Which workflow this belongs to
+    public string CurrentState { get; set; } = ""; // What state we're in now
+    public List<string> History { get; set; } = new(); // Keep track of actions taken
+}
+
+// API to create a new workflow
+app.MapPost("/workflow", ([FromBody] Workflow workflow) =>
+{
+    // Check if there's exactly one starting state
+    if (workflow.States.Count(s => s.IsInitial) != 1)
+        return Results.BadRequest("Need exactly one initial state!");
+    
+    // Check for duplicate state IDs
+    if (workflow.States.GroupBy(s => s.Id).Any(g => g.Count() > 1))
+        return Results.BadRequest("Duplicate state IDs!");
+    
+    // Check for duplicate action IDs
+    if (workflow.Actions.GroupBy(a => a.Id).Any(g => g.Count() > 1))
+        return Results.BadRequest("Duplicate action IDs!");
+    
+    // Make sure actions point to valid states
+    foreach (var action in workflow.Actions)
+    {
+        if (!workflow.States.Any(s => s.Id == action.ToState))
+            return Results.BadRequest($"Action {action.Id} has invalid toState!");
+        if (action.FromStates.Any(fs => !workflow.States.Any(s => s.Id == fs)))
+            return Results.BadRequest($"Action {action.Id} has invalid fromState!");
+    }
+
+    // Save the workflow with a new ID
+    workflow.Id = Guid.NewGuid().ToString();
+    workflows[workflow.Id] = workflow;
+    return Results.Ok(new { Id = workflow.Id }); // Return the new workflow ID
+});
+
+// API to get a workflow by ID
+app.MapGet("/workflow/{id}", (string id) =>
+{
+    // If workflow exists, return it; else say not found
+    if (workflows.ContainsKey(id))
+        return Results.Ok(workflows[id]);
+    return Results.NotFound();
+});
+
+// API to start a new instance of a workflow
+app.MapPost("/workflow/{id}/start", (string id) =>
+{
+    // Check if the workflow exists
+    if (!workflows.ContainsKey(id))
+        return Results.BadRequest("Workflow not found!");
+
+    var workflow = workflows[id];
+    // Find the initial state
+    var initialState = workflow.States.FirstOrDefault(s => s.IsInitial);
+    if (initialState == null)
+        return Results.BadRequest("No initial state!");
+
+    // Create a new instance starting at the initial state
+    var instance = new WorkflowInstance
+    {
+        WorkflowId = id,
+        CurrentState = initialState.Id
+    };
+    instances[instance.Id] = instance;
+    return Results.Ok(new { InstanceId = instance.Id }); // Return the instance ID
+});
+
+// API to run an action on an instance
+app.MapPost("/instance/{id}/action", ([FromBody] ActionRequest request, string id) =>
+{
+    // Check if the instance exists
+    if (!instances.ContainsKey(id))
+        return Results.BadRequest("Instance not found!");
+
+    var instance = instances[id];
+    var workflow = workflows[instance.WorkflowId];
+    // Find the action
+    var action = workflow.Actions.FirstOrDefault(a => a.Id == request.ActionId);
+    if ( action == null)
+        return Results.BadRequest("Action not found!");
+    
+    // Check if action is allowed
+    if (!action.Enabled)
+        return Results.BadRequest("Action is disabled!");
+    if (!action.FromStates.Contains(instance.CurrentState))
+        return Results.BadRequest("Action not allowed from current state!");
+
+    // Check if current state is final (no actions allowed)
+    var currentState = workflow.States.First(s => s.Id == instance.CurrentState);
+    if (currentState.IsFinal)
+        return Results.BadRequest("Instance is in final state!");
+
+    // Make sure the target state exists
+    if (!workflow.States.Any(s => s.Id == action.ToState))
+        return Results.BadRequest("Target state not found!");
+
+    // Update the instance state and add to history
+    instance.CurrentState = action.ToState;
+    instance.History.Add($"{request.ActionId} at {DateTime.UtcNow}");
+    return Results.Ok();
+});
+
+// API to get instance details
+app.MapGet("/instance/{id}", (string id) =>
+{
+    // If instance exists, return it; else say not found
+    if (instances.ContainsKey(id))
+        return Results.Ok(instances[id]);
+    return Results.NotFound();
+});
+
+// Start the web server
+app.Run();
+
+// Helper class for action request
+public record ActionRequest(string ActionId);
